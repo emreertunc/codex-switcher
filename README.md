@@ -15,7 +15,7 @@
 - **Quick Switching** – Switch between accounts from the main window, native tray menu, or tray popup
 - **Automatic Warm-Up** – Warm up one account or all accounts manually, or keep accounts fresh with automatic warm-up scheduling
 - **System Tray Controls** – Use the tray popup to switch accounts, inspect quota, refresh usage, open the main window, or quit the app
-- **Tray Display Modes** – Choose between the app icon with session percentage or a text-only hourly/weekly percentage display
+- **Tray Display Modes** – Choose between the app icon with session percentage, a text-only hourly/weekly percentage display, or a hidden tray icon
 - **Usage Monitoring** – View real-time 5-hour session and weekly usage, reset timing, credits, and subscription expiry
 - **Blocked Switch Recovery** – Detect running Codex sessions and offer a force-close flow before retrying the account switch
 - **Dual Login Mode** – Authenticate with ChatGPT OAuth or import existing `auth.json` files

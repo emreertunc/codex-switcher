@@ -25,6 +25,7 @@ pub enum TrayDisplayMode {
     IconAndSession,
     #[default]
     ActiveUsageText,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
