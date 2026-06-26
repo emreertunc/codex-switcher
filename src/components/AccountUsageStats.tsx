@@ -12,6 +12,7 @@ interface AccountUsageStatsProps {
   accountId: string;
   enabled: boolean;
   defaultOpen?: boolean;
+  onStatsLoaded?: (stats: AccountUsageStatsInfo | null) => void;
 }
 
 function emptyStats(accountId: string, error: string): AccountUsageStatsInfo {
@@ -38,6 +39,7 @@ function emptyStats(accountId: string, error: string): AccountUsageStatsInfo {
     },
     daily: [],
     top_invocations: [],
+    reset_credits: null,
     error,
   };
 }
@@ -339,7 +341,12 @@ function InvocationRow({ invocation }: { invocation: AccountTopInvocation }) {
   );
 }
 
-export function AccountUsageStats({ accountId, enabled, defaultOpen = false }: AccountUsageStatsProps) {
+export function AccountUsageStats({
+  accountId,
+  enabled,
+  defaultOpen = false,
+  onStatsLoaded,
+}: AccountUsageStatsProps) {
   const [panelOpen, setPanelOpen] = useState(defaultOpen);
   const [stats, setStats] = useState<AccountUsageStatsInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -349,7 +356,9 @@ export function AccountUsageStats({ accountId, enabled, defaultOpen = false }: A
     const requestId = ++requestSeq.current;
 
     if (!enabled) {
-      setStats(emptyStats(accountId, "Usage stats are available for ChatGPT accounts only."));
+      const next = emptyStats(accountId, "Usage stats are available for ChatGPT accounts only.");
+      setStats(next);
+      onStatsLoaded?.(next);
       setLoading(false);
       return;
     }
@@ -361,22 +370,26 @@ export function AccountUsageStats({ accountId, enabled, defaultOpen = false }: A
       });
       if (requestId !== requestSeq.current) return;
       setStats(next);
+      onStatsLoaded?.(next);
     } catch (err) {
       if (requestId !== requestSeq.current) return;
-      setStats(emptyStats(accountId, err instanceof Error ? err.message : String(err)));
+      const next = emptyStats(accountId, err instanceof Error ? err.message : String(err));
+      setStats(next);
+      onStatsLoaded?.(next);
     } finally {
       if (requestId === requestSeq.current) {
         setLoading(false);
       }
     }
-  }, [accountId, enabled]);
+  }, [accountId, enabled, onStatsLoaded]);
 
   useEffect(() => {
     requestSeq.current += 1;
     setStats(null);
+    onStatsLoaded?.(null);
     setLoading(false);
     setPanelOpen(defaultOpen);
-  }, [accountId, defaultOpen]);
+  }, [accountId, defaultOpen, onStatsLoaded]);
 
   useEffect(() => {
     if (!panelOpen) return;

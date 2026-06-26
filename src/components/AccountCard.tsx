@@ -1,7 +1,10 @@
-import { useState, useRef, useEffect } from "react";
-import type { AccountWithUsage } from "../types";
+import { useCallback, useState, useRef, useEffect } from "react";
+import type { AccountResetCredits, AccountUsageStats as AccountUsageStatsInfo, AccountWithUsage } from "../types";
+import { invokeBackend } from "../lib/platform";
 import { AccountUsageStats } from "./AccountUsageStats";
 import { UsageBar } from "./UsageBar";
+
+const RESET_CREDITS_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 interface AccountCardProps {
   account: AccountWithUsage;
@@ -78,6 +81,64 @@ function getSubscriptionStatus(timestamp: string | null | undefined): {
   };
 }
 
+function formatResetCreditsCount(resetCredits: AccountResetCredits | null): string | null {
+  if (!resetCredits) return null;
+  const count = resetCredits.available_count;
+  if (count <= 0) return null;
+  return count === 1 ? "1 reset" : `${count} resets`;
+}
+
+function formatResetCreditsExpiry(resetCredits: AccountResetCredits | null): string | null {
+  if (!resetCredits?.next_expires_at) return null;
+
+  const expiry = new Date(resetCredits.next_expires_at);
+  if (Number.isNaN(expiry.getTime())) return null;
+
+  return `closest expires ${new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(expiry)}`;
+}
+
+function getResetCreditsTone(resetCredits: AccountResetCredits | null): {
+  container: string;
+  badge: string;
+  text: string;
+} {
+  const fallback = {
+    container: "border-sky-200 bg-sky-50/70 dark:border-sky-800 dark:bg-sky-950/30",
+    badge: "border-sky-200 bg-sky-100 text-sky-700 dark:border-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
+    text: "text-sky-700/80 dark:text-sky-300/80",
+  };
+
+  if (!resetCredits?.next_expires_at) return fallback;
+
+  const expiry = new Date(resetCredits.next_expires_at);
+  if (Number.isNaN(expiry.getTime())) return fallback;
+
+  const remainingMs = expiry.getTime() - Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  if (remainingMs <= 3 * dayMs) {
+    return {
+      container: "border-red-200 bg-red-50/70 dark:border-red-800 dark:bg-red-950/30",
+      badge: "border-red-200 bg-red-100 text-red-700 dark:border-red-700 dark:bg-red-900/50 dark:text-red-300",
+      text: "text-red-700/80 dark:text-red-300/80",
+    };
+  }
+
+  if (remainingMs <= 10 * dayMs) {
+    return {
+      container: "border-amber-200 bg-amber-50/70 dark:border-amber-800 dark:bg-amber-950/30",
+      badge: "border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+      text: "text-amber-700/80 dark:text-amber-300/80",
+    };
+  }
+
+  return fallback;
+}
+
 function BlurredText({ children, blur }: { children: React.ReactNode; blur: boolean }) {
   return (
     <span
@@ -112,7 +173,9 @@ export function AccountCard({
   );
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
+  const [resetCredits, setResetCredits] = useState<AccountResetCredits | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const resetRequestSeq = useRef(0);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -173,6 +236,50 @@ export function AccountCard({
   const planColorClass = planColors[planKey] || planColors.free;
   const showSubscriptionStatus = account.auth_mode === "chat_g_p_t";
   const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at);
+  const resetCreditsCount = formatResetCreditsCount(resetCredits);
+  const resetCreditsExpiry = formatResetCreditsExpiry(resetCredits);
+  const resetCreditsTone = getResetCreditsTone(resetCredits);
+
+  const loadResetCredits = useCallback(async () => {
+    const requestId = ++resetRequestSeq.current;
+
+    if (account.auth_mode !== "chat_g_p_t") {
+      setResetCredits(null);
+      return;
+    }
+
+    try {
+      const stats = await invokeBackend<AccountUsageStatsInfo>("get_account_usage_stats", {
+        accountId: account.id,
+      });
+      if (requestId !== resetRequestSeq.current) return;
+      setResetCredits(stats.account_id === account.id ? stats.reset_credits : null);
+    } catch {
+      if (requestId !== resetRequestSeq.current) return;
+      setResetCredits(null);
+    }
+  }, [account.auth_mode, account.id]);
+
+  const handleStatsLoaded = useCallback(
+    (stats: AccountUsageStatsInfo | null) => {
+      setResetCredits(stats?.account_id === account.id ? stats.reset_credits : null);
+    },
+    [account.id]
+  );
+
+  useEffect(() => {
+    setResetCredits(null);
+
+    void loadResetCredits();
+    const timer = window.setInterval(() => {
+      void loadResetCredits();
+    }, RESET_CREDITS_REFRESH_INTERVAL_MS);
+
+    return () => {
+      resetRequestSeq.current += 1;
+      window.clearInterval(timer);
+    };
+  }, [loadResetCredits]);
 
 
   return (
@@ -224,7 +331,7 @@ export function AccountCard({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-[60%] flex-wrap items-center justify-end gap-2">
           {/* Eye toggle */}
           {onToggleMask && (
             <button
@@ -250,6 +357,20 @@ export function AccountCard({
           >
             {planDisplay}
           </span>
+          {resetCreditsCount && (
+            <div
+              className={`flex max-w-full items-center gap-2 rounded-lg border px-2 py-1.5 text-xs ${resetCreditsTone.container}`}
+            >
+              <span className={`rounded-full border px-2.5 py-0.5 font-medium ${resetCreditsTone.badge}`}>
+                {resetCreditsCount}
+              </span>
+              {resetCreditsExpiry && (
+                <span className={`truncate ${resetCreditsTone.text}`}>
+                  {resetCreditsExpiry}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -274,6 +395,7 @@ export function AccountCard({
         accountId={account.id}
         enabled={account.auth_mode === "chat_g_p_t"}
         defaultOpen={account.is_active}
+        onStatsLoaded={handleStatsLoaded}
       />
 
       {/* Actions */}

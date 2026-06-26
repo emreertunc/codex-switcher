@@ -61,6 +61,24 @@ export interface AccountTopInvocation {
   skill_name: string | null;
 }
 
+export interface AccountResetCredit {
+  id: string;
+  reset_type: string;
+  status: string;
+  granted_at: string | null;
+  expires_at: string | null;
+  redeem_started_at: string | null;
+  redeemed_at: string | null;
+  title: string | null;
+  description: string | null;
+}
+
+export interface AccountResetCredits {
+  available_count: number;
+  next_expires_at: string | null;
+  credits: AccountResetCredit[];
+}
+
 export interface AccountUsageStats {
   account_id: string;
   available: boolean;
@@ -71,6 +89,7 @@ export interface AccountUsageStats {
   activity: AccountUsageActivity;
   daily: AccountDailyUsage[];
   top_invocations: AccountTopInvocation[];
+  reset_credits: AccountResetCredits | null;
   error: string | null;
 }
 

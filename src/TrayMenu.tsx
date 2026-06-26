@@ -181,6 +181,7 @@ function TrayMenu() {
           },
           daily: [],
           top_invocations: [],
+          reset_credits: null,
           error: formatError(err),
         },
       }));
