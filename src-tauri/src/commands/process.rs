@@ -646,6 +646,15 @@ mod tests {
             Some("Codex (Renderer)")
         ));
     }
+
+    #[test]
+    fn windows_codex_shortcut_filter_excludes_switcher() {
+        assert!(super::is_windows_codex_shortcut_name("Codex.lnk"));
+        assert!(super::is_windows_codex_shortcut_name("OpenAI Codex.lnk"));
+        assert!(!super::is_windows_codex_shortcut_name("Codex Switcher.lnk"));
+        assert!(!super::is_windows_codex_shortcut_name("codex-switcher.lnk"));
+        assert!(!super::is_windows_codex_shortcut_name("Codex.txt"));
+    }
 }
 
 #[cfg(windows)]
@@ -810,7 +819,20 @@ fn spawn_windows_codex_exe(path: &std::path::Path) -> bool {
 fn open_windows_registered_app() -> bool {
     let script = r#"
 $app = Get-StartApps |
-  Where-Object { $_.Name -like '*Codex*' -or $_.AppID -like '*Codex*' } |
+  Where-Object {
+    $name = [string]$_.Name
+    $appId = [string]$_.AppID
+    $text = ($name + ' ' + $appId).ToLowerInvariant()
+    $isSwitcher = $text.Contains('codex switcher') -or $text.Contains('codex-switcher') -or $text.Contains('lampese')
+    $isCodex = $name -eq 'Codex' -or $name -eq 'OpenAI Codex' -or $appId -like 'OpenAI.Codex*' -or ($text.Contains('openai') -and $text.Contains('codex'))
+    $isCodex -and -not $isSwitcher
+  } |
+  Sort-Object @{ Expression = {
+    if ($_.Name -eq 'Codex') { 0 }
+    elseif ($_.Name -eq 'OpenAI Codex') { 1 }
+    elseif ($_.AppID -like 'OpenAI.Codex*') { 2 }
+    else { 3 }
+  } }, Name |
   Select-Object -First 1
 if ($null -eq $app) { exit 1 }
 Start-Process ("shell:AppsFolder\" + $app.AppID)
@@ -958,13 +980,36 @@ fn collect_windows_codex_shortcuts(
             continue;
         };
 
-        if file_name.to_ascii_lowercase().contains("codex")
-            && path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
-        {
+        if is_windows_codex_shortcut_name(file_name) {
             candidates.push(path);
         }
     }
+}
+
+#[cfg(any(windows, test))]
+fn is_windows_codex_shortcut_name(file_name: &str) -> bool {
+    if !file_name
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("lnk"))
+    {
+        return false;
+    }
+
+    let shortcut_name = file_name
+        .rsplit_once('.')
+        .map(|(name, _)| name)
+        .unwrap_or(file_name)
+        .to_ascii_lowercase();
+
+    if shortcut_name.contains("codex switcher")
+        || shortcut_name.contains("codex-switcher")
+        || shortcut_name.contains("switcher")
+    {
+        return false;
+    }
+
+    shortcut_name == "codex"
+        || shortcut_name.starts_with("codex ")
+        || shortcut_name.contains("openai codex")
+        || (shortcut_name.contains("openai") && shortcut_name.contains("codex"))
 }
