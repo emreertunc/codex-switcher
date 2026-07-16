@@ -30,13 +30,17 @@ import {
   writeTimedWarmupEnabled,
   writeTimedWarmupTimes,
 } from "./lib/autoWarmup";
+import {
+  getAutoWarmupWindowKey,
+  getAutoWarmupWindowKind,
+  getDueAutoWarmupWindow,
+  type AutoWarmupWindow,
+  type AutoWarmupWindowKind,
+} from "./lib/autoWarmupPolicy";
 import "./App.css";
 
 const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
-const AUTO_WARMUP_RETRY_BACKOFF_MS = 5 * 60 * 1000;
-const AUTO_WARMUP_MIN_SUCCESS_INTERVAL_MS = 60 * 60 * 1000;
-const AUTO_WARMUP_FULL_WINDOW_SLACK_MINUTES = 5;
-const DEFAULT_PRIMARY_WINDOW_MINUTES = 300;
+const AUTO_WARMUP_RETRY_BACKOFF_MS = 60 * 1000;
 const LIMIT_FULL_THRESHOLD = 99.5;
 const SWITCH_ACCOUNT_BLOCKED_EVENT = "switch-account-blocked";
 const CLOSE_BEHAVIOR_REQUESTED_EVENT = "close-behavior-requested";
@@ -51,6 +55,8 @@ type AutoWarmupLedger = Record<
   string,
   {
     lastSuccessfulWarmupAt?: number;
+    lastAutoWindowKey?: string;
+    lastAutoWindowKind?: AutoWarmupWindowKind;
   }
 >;
 const appWindow = getCurrentWindow();
@@ -74,20 +80,30 @@ function readStoredAutoWarmupLedger(): AutoWarmupLedger {
     const parsed = JSON.parse(window.localStorage.getItem(AUTO_WARMUP_LEDGER_STORAGE_KEY) ?? "{}");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
 
-    return Object.fromEntries(
-      Object.entries(parsed)
-        .map(([accountId, value]) => {
-          const timestamp =
-            value &&
-            typeof value === "object" &&
-            "lastSuccessfulWarmupAt" in value &&
-            typeof value.lastSuccessfulWarmupAt === "number"
-              ? value.lastSuccessfulWarmupAt
-              : undefined;
-          return timestamp ? [accountId, { lastSuccessfulWarmupAt: timestamp }] : null;
-        })
-        .filter((entry): entry is [string, { lastSuccessfulWarmupAt: number }] => Boolean(entry))
-    );
+    const entries: Array<[string, AutoWarmupLedger[string]]> = [];
+    for (const [accountId, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+
+      const entry: AutoWarmupLedger[string] = {};
+      if (
+        "lastSuccessfulWarmupAt" in value &&
+        typeof value.lastSuccessfulWarmupAt === "number"
+      ) {
+        entry.lastSuccessfulWarmupAt = value.lastSuccessfulWarmupAt;
+      }
+      if ("lastAutoWindowKey" in value && typeof value.lastAutoWindowKey === "string") {
+        entry.lastAutoWindowKey = value.lastAutoWindowKey;
+      }
+      if (
+        "lastAutoWindowKind" in value &&
+        (value.lastAutoWindowKind === "session" || value.lastAutoWindowKind === "weekly")
+      ) {
+        entry.lastAutoWindowKind = value.lastAutoWindowKind;
+      }
+
+      if (Object.keys(entry).length > 0) entries.push([accountId, entry]);
+    }
+    return Object.fromEntries(entries);
   } catch {
     return {};
   }
@@ -129,33 +145,6 @@ function getTimedWarmupTargets(accounts: AccountWithUsage[]): AccountWithUsage[]
       !account.usage.error &&
       !isLimitFull(account.usage.secondary_used_percent)
   );
-}
-
-function getPrimaryWindowMinutes(usage: UsageInfo): number {
-  return usage.primary_window_minutes ?? DEFAULT_PRIMARY_WINDOW_MINUTES;
-}
-
-function getPrimaryRemainingMs(usage: UsageInfo): number | null {
-  if (!usage.primary_resets_at) return null;
-  return usage.primary_resets_at * 1000 - Date.now();
-}
-
-function isPrimaryFullWindow(usage: UsageInfo): boolean {
-  const remainingMs = getPrimaryRemainingMs(usage);
-  if (remainingMs === null) return false;
-
-  const thresholdMinutes = Math.max(
-    0,
-    getPrimaryWindowMinutes(usage) - AUTO_WARMUP_FULL_WINDOW_SLACK_MINUTES
-  );
-  return remainingMs >= thresholdMinutes * 60 * 1000;
-}
-
-function getLastSuccessfulWarmupAt(
-  ledger: AutoWarmupLedger,
-  accountId: string
-): number | undefined {
-  return ledger[accountId]?.lastSuccessfulWarmupAt;
 }
 
 function App() {
@@ -557,12 +546,24 @@ function App() {
     }
   }, []);
 
-  const markSuccessfulWarmup = useCallback((accountId: string, timestamp = Date.now()) => {
-    setAutoWarmupLedger((prev) => ({
-      ...prev,
-      [accountId]: { lastSuccessfulWarmupAt: timestamp },
-    }));
-  }, []);
+  const markSuccessfulWarmup = useCallback(
+    (accountId: string, timestamp = Date.now(), window?: AutoWarmupWindow) => {
+      delete autoWarmupRetryAfterRef.current[accountId];
+      setAutoWarmupLedger((prev) => ({
+        ...prev,
+        [accountId]: {
+          lastSuccessfulWarmupAt: timestamp,
+          ...(window
+            ? {
+                lastAutoWindowKey: getAutoWarmupWindowKey(window),
+                lastAutoWindowKind: window.kind,
+              }
+            : {}),
+        },
+      }));
+    },
+    []
+  );
 
   const {
     forceCloseConfirmOpen,
@@ -766,24 +767,9 @@ function App() {
     });
   };
 
-  const isAutoWarmupDue = useCallback(
+  const getDueAutoWarmupForAccount = useCallback(
     (accountId: string, usage: UsageInfo | undefined) => {
-      if (!usage || usage.error || !usage.primary_resets_at) return false;
-      if (isLimitFull(usage.secondary_used_percent)) return false;
-      if (!isPrimaryFullWindow(usage)) return false;
-
-      const lastSuccessfulWarmupAt = getLastSuccessfulWarmupAt(
-        autoWarmupLedgerRef.current,
-        accountId
-      );
-      if (
-        lastSuccessfulWarmupAt &&
-        Date.now() - lastSuccessfulWarmupAt < AUTO_WARMUP_MIN_SUCCESS_INTERVAL_MS
-      ) {
-        return false;
-      }
-
-      return true;
+      return getDueAutoWarmupWindow(usage, autoWarmupLedgerRef.current[accountId]);
     },
     []
   );
@@ -796,11 +782,14 @@ function App() {
     ) => {
       if (isRunning) return "Warming...";
       if (!isEnabled) return "Auto: off";
-      if (!usage || usage.error || !usage.primary_resets_at) return "Auto: on";
+      if (!usage || usage.error) return "Auto: on";
 
-      if (isLimitFull(usage.secondary_used_percent)) {
+      const windowKind = getAutoWarmupWindowKind(usage);
+      if (windowKind === "session" && isLimitFull(usage.secondary_used_percent)) {
         return "Waiting weekly reset";
       }
+      if (windowKind === "session") return "Auto: 5h";
+      if (windowKind === "weekly") return "Auto: weekly";
 
       return "Auto: on";
     },
@@ -845,17 +834,13 @@ function App() {
           return;
         }
 
-        if (freshUsage.error || !freshUsage.primary_resets_at) {
-          backOffAutoWarmupRetry(accountId);
-          return;
-        }
-        if (!isAutoWarmupDue(accountId, freshUsage)) {
-          return;
-        }
+        const window = getDueAutoWarmupForAccount(accountId, freshUsage);
+        if (!window) return;
 
         await warmupAccount(accountId);
-        markSuccessfulWarmup(accountId);
-        showWarmupToast(`Auto warm-up sent for ${accountName}`);
+        markSuccessfulWarmup(accountId, Date.now(), window);
+        const modeLabel = window.kind === "session" ? "5h" : "weekly";
+        showWarmupToast(`Auto ${modeLabel} warm-up sent for ${accountName}`);
       } catch (err) {
         console.error("Auto warm-up failed:", err);
         backOffAutoWarmupRetry(accountId);
@@ -874,7 +859,7 @@ function App() {
     [
       backOffAutoWarmupRetry,
       formatWarmupError,
-      isAutoWarmupDue,
+      getDueAutoWarmupForAccount,
       markSuccessfulWarmup,
       refreshSingleUsage,
       showWarmupToast,
@@ -894,7 +879,7 @@ function App() {
         const retryAfter = autoWarmupRetryAfterRef.current[account.id];
         if (retryAfter && Date.now() < retryAfter) continue;
 
-        if (!isAutoWarmupDue(account.id, account.usage)) continue;
+        if (!getDueAutoWarmupForAccount(account.id, account.usage)) continue;
 
         void runAutoWarmupForAccount(account.id, account.name);
       }
@@ -910,7 +895,7 @@ function App() {
   }, [
     autoWarmupAccountIds.size,
     autoWarmupAllEnabled,
-    isAutoWarmupDue,
+    getDueAutoWarmupForAccount,
     runAutoWarmupForAccount,
   ]);
 
