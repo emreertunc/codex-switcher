@@ -132,13 +132,15 @@ Dock mode.
 
 ## Warm-Up
 
-A warm-up sends one minimal request to an account so its current 5-hour usage
-window starts counting — handy for activating a window before you need it.
+A warm-up sends one minimal request to an account so its current usage window
+has activity before you need it.
 
 - **Manual** – warm up a single or all accounts, from the main window or tray menu.
-- **Automatic** – when enabled (per account or for all), the app warms an
-  account each time its 5-hour window resets, as long as the weekly limit isn't
-  exhausted.
+- **Automatic** – when enabled (per account or for all), the app tracks the
+  5-hour window when available and warms it after each reset, as long as the
+  weekly limit isn't exhausted. If only the weekly window is available, it
+  warms once after the weekly reset and automatically returns to the 5-hour
+  schedule if that window reappears.
 - **Timed** – pick specific times of day (e.g. `08:00`, `13:00`, `18:00`) from
   the **Timed** control in the main window. At each time the app warms all
   accounts (skipping any whose weekly limit is exhausted), so you control when
